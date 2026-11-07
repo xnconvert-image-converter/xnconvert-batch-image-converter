@@ -1,0 +1,25 @@
+diff --git a/jpegxl-src/Cargo.toml b/jpegxl-src/Cargo.toml
+index 80fb878..318a9b4 100644
+--- a/jpegxl-src/Cargo.toml
++++ b/jpegxl-src/Cargo.toml
+@@ -6,7 +6,6 @@ name = "jpegxl-src"
+ readme = "README.md"
+ repository = "https://github.com/inflation/jpegxl-rs"
+ version = "0.12.0"
+-rust-version.workspace = true
+ exclude = [
+     "libjxl/third_party/libpng",
+     "libjxl/third_party/sjpeg",
+diff --git a/jpegxl-src/src/lib.rs b/jpegxl-src/src/lib.rs
+index bafbfae..7564cbc 100644
+--- a/jpegxl-src/src/lib.rs
++++ b/jpegxl-src/src/lib.rs
+@@ -95,7 +95,7 @@ pub fn build() {
+                 "CMAKE_VS_GLOBALS",
+                 "UseMultiToolTask=true;EnforceProcessCountAcrossBuilds=true",
+             ) // Enable parallel builds
+-            .define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreaded")
++            .define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL")
+             .define("CMAKE_EXE_LINKER_FLAGS", exeflags)
+             .cflag("/Zl");
+     }

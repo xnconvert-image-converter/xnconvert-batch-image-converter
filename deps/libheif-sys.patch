@@ -1,0 +1,482 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 28cd7fd..54a4f5b 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -39,10 +39,11 @@ v1_20 = []
+ v1_21 = []
+ v1_23 = []
+ latest = ["v1_23"]
++use-x265 = []
+ # Use bindgen to generate bindings for libheif,
+ # instead using of pre-generated bindings.rs.
+ use-bindgen = ["latest", "dep:bindgen", "dep:prettyplease"]
+-embedded-libheif = ["dep:cmake"]
++embedded-libheif = []
+ 
+ 
+ [package.metadata.docs.rs]
+@@ -55,15 +56,9 @@ cfg-if = "1.0"
+ 
+ 
+ [build-dependencies]
+-system-deps = "8.0"
+ prettyplease = { version = "0.3.0", optional = true }
+ bindgen = { version = "0.72.1", optional = true }
+-cmake = { version = "0.1.58", optional = true }
+-
+-
+-[target.'cfg(windows)'.build-dependencies]
+-vcpkg = "0.2.15"
+-walkdir = "2.5"
++cmake = "0.1.58"
+ 
+ 
+ [package.metadata.vcpkg]
+diff --git a/build.rs b/build.rs
+index 5f04ba6..375ce14 100644
+--- a/build.rs
++++ b/build.rs
+@@ -1,5 +1,4 @@
+-use std::io;
+-use std::path::{Path, PathBuf};
++use std::path::PathBuf;
+ 
+ fn main() {
+     if std::env::var("DOCS_RS").is_ok() {
+@@ -10,189 +9,244 @@ fn main() {
+     println!("cargo:rerun-if-changed=build.rs");
+     println!("cargo:rerun-if-changed=wrapper.h");
+ 
+-    // https://github.com/Cykooz/libheif-sys/issues/14
++    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+-    let windows_is_build_target = target_os == "windows" && target_env == "msvc";
++    let is_emscripten = target_os == "emscripten";
++    let is_msvc = target_env == "msvc";
++
++    let libde265_output = {
++        let mut config = cmake::Config::new("../libde265");
++        config
++            .out_dir(out_dir.join("libde265"))
++            .define("ENABLE_SDL", "OFF")
++            .define("BUILD_SHARED_LIBS", "OFF")
++            .define("ENABLE_ENCODER", "OFF")
++            .define("ENABLE_DECODER", "OFF")
++            .define("FORCE_FULL_VISIBILITY", if is_msvc { "ON" } else { "OFF" });
++        configure_msvc_runtime(&mut config);
++        config.build()
++    };
+ 
+-    #[allow(unused_variables)]
+-    let include_paths = if windows_is_build_target {
+-        #[cfg(all(target_os = "windows", target_env = "msvc"))]
+-        install_libheif_by_vcpkg();
+-        Vec::new()
++    let libwebp_output = if is_emscripten {
++        None
+     } else {
+-        find_libheif()
++        let mut config = cmake::Config::new("../libwebp");
++        config
++            .out_dir(out_dir.join("libwebp"))
++            .define("BUILD_SHARED_LIBS", "OFF")
++            .define("WEBP_BUILD_ANIM_UTILS", "OFF")
++            .define("WEBP_BUILD_CWEBP", "OFF")
++            .define("WEBP_BUILD_DWEBP", "OFF")
++            .define("WEBP_BUILD_GIF2WEBP", "OFF")
++            .define("WEBP_BUILD_IMG2WEBP", "OFF")
++            .define("WEBP_BUILD_VWEBP", "OFF")
++            .define("WEBP_BUILD_WEBPINFO", "OFF")
++            .define("WEBP_BUILD_LIBWEBPMUX", "ON")
++            .define("WEBP_BUILD_WEBPMUX", "OFF")
++            .define("WEBP_BUILD_EXTRAS", "OFF");
++        configure_msvc_runtime(&mut config);
++        Some(config.build())
+     };
+ 
+-    #[cfg(feature = "use-bindgen")]
+-    run_bindgen(&include_paths);
+-}
+-
+-#[allow(dead_code)]
+-fn prepare_libheif_src() -> PathBuf {
+-    let out_path = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+-    let crate_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+-    let libheif_dir = crate_dir.join("vendor/libheif");
+-    let dst_dir = out_path.join("libheif");
+-    copy_dir_all(libheif_dir, &dst_dir).unwrap();
+-
+-    // Patch CMakeLists.txt to disable a building `heifio` library
+-    // that is used for example applications.
+-    let cmake_lists_path = dst_dir.join("CMakeLists.txt");
+-    let mut contents =
+-        std::fs::read_to_string(&cmake_lists_path).expect("failed to read libheif/CMakeLists.txt");
+-    contents = contents.replace("add_subdirectory(heifio)", "");
+-    std::fs::write(&cmake_lists_path, contents).expect("failed to write libheif/CMakeLists.txt");
+-    dst_dir
+-}
+-
+-#[cfg(feature = "embedded-libheif")]
+-fn compile_libheif() -> String {
+-    use std::path::PathBuf;
++    #[cfg(feature = "use-x265")]
++    let x265_output: Option<PathBuf> = {
++        let mut config = cmake::Config::new("../x265/source");
++        config
++            .out_dir(out_dir.join("x265"))
++            .define("ENABLE_SDL", "OFF")
++            .define("BUILD_SHARED_LIBS", "OFF")
++            .define("ENABLE_SHARED", "OFF")
++            .define("ENABLE_ENCODER", "OFF");
++        if is_emscripten {
++            config.define("ENABLE_ASSEMBLY", "OFF");
++        }
++        configure_msvc_runtime(&mut config);
++        Some(config.build())
++    };
++    #[cfg(not(feature = "use-x265"))]
++    let x265_output: Option<PathBuf> = None;
++
++    #[cfg(not(feature = "use-x265"))]
++    let kvazaar_output: Option<PathBuf> = {
++        let mut config = cmake::Config::new("../kvazaar");
++        config
++            .out_dir(out_dir.join("kvazaar"))
++            .define("BUILD_SHARED_LIBS", "OFF")
++            .define("BUILD_TESTS", "OFF")
++            .define("GIT_SUBMODULE", "OFF");
++        configure_msvc_runtime(&mut config);
++        Some(config.build())
++    };
++    #[cfg(feature = "use-x265")]
++    let kvazaar_output: Option<PathBuf> = None;
+ 
+-    let out_path = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+-    let libheif_dir = prepare_libheif_src();
+-
+-    let mut build_config = cmake::Config::new(libheif_dir);
+-    build_config.out_dir(out_path.join("libheif_build"));
+-    build_config.define("CMAKE_INSTALL_LIBDIR", "lib");
+-
+-    // Disable some options
+-    for key in [
+-        "BUILD_SHARED_LIBS",
+-        "BUILD_TESTING",
+-        "WITH_GDK_PIXBUF",
+-        "WITH_EXAMPLES",
+-        "WITH_EXAMPLE_HEIF_THUMB",
+-        "WITH_EXAMPLE_HEIF_VIEW",
+-        "ENABLE_EXPERIMENTAL_FEATURES",
+-        "ENABLE_PLUGIN_LOADING",
+-        "BUILD_DOCUMENTATION",
+-    ] {
+-        build_config.define(key, "OFF");
++    let mut dep_outputs = vec![libde265_output.clone()];
++    if let Some(output) = &x265_output {
++        dep_outputs.push(output.clone());
++    }
++    if let Some(output) = &kvazaar_output {
++        dep_outputs.push(output.clone());
++    }
++    if let Some(output) = &libwebp_output {
++        dep_outputs.push(output.clone());
+     }
+ 
+-    // Enable some options
+-    for key in [
+-        "WITH_REDUCED_VISIBILITY",
+-        "WITH_LIBSHARPYUV",
+-        // TODO: Try to enable this in the future.
+-        //       Right now it is the reason of linker's errors like
+-        //       "undefined reference to `BrotliEncoderDestroyInstance'"
+-        // "WITH_UNCOMPRESSED_CODEC",
+-        // "WITH_HEADER_COMPRESSION",
+-    ] {
+-        build_config.define(key, "ON");
++    let mut libheif = cmake::Config::new("../libheif");
++    libheif
++        .out_dir(out_dir.join("libheif"))
++        .define("CMAKE_PREFIX_PATH", join_paths_for_cmake(&dep_outputs))
++        .define("BUILD_SHARED_LIBS", "OFF")
++        .define("COMPILE_WARNING_AS_ERROR", "OFF")
++        .define("LIBDE265_INCLUDE_DIR", libde265_output.join("include"))
++        .define("LIBDE265_LIBRARY", "-de265")
++        .define("WITH_AOM_DECODER", "OFF")
++        .define("WITH_AOM_ENCODER", "OFF")
++        .define("WITH_DAV1D", "OFF")
++        .define("WITH_RAV1E", "OFF")
++        .define("WITH_SvtEnc", "OFF")
++        .define("WITH_X264", "OFF")
++        .define("WITH_OpenH264_DECODER", "OFF")
++        .define("WITH_JPEG_DECODER", "OFF")
++        .define("WITH_JPEG_ENCODER", "OFF")
++        .define("WITH_UNCOMPRESSED_CODEC", "OFF")
++        .define("WITH_OpenJPEG_DECODER", "OFF")
++        .define("WITH_OpenJPEG_ENCODER", "OFF")
++        .define("WITH_FFMPEG_DECODER", "OFF")
++        .define("BUILD_TESTING", "OFF")
++        .define("BUILD_DOCUMENTATION", "OFF")
++        .define("WITH_HEADER_COMPRESSION", "OFF")
++        .define("WITH_LIBSHARPYUV", "ON")
++        .define("WITH_EXAMPLES", "OFF")
++        .define("WITH_FUZZERS", "OFF")
++        .define("ENABLE_PLUGIN_LOADING", "OFF")
++        .define("WITH_GDK_PIXBUF", "OFF")
++        .define("WITH_REDUCED_VISIBILITY", "ON")
++        .define("WITH_LIBDE265", "ON");
++
++    configure_msvc_runtime(&mut libheif);
++
++    if !is_msvc {
++        libheif.cxxflag("-Wno-error=uninitialized");
+     }
+ 
+-    // List of encoders and decoders that have corresponding plugins
+-    let encoders_decoders = [
+-        "AOM_DECODER",
+-        "AOM_ENCODER",
+-        "DAV1D",
+-        "LIBDE265",
+-        "RAV1E",
+-        "SvtEnc",
+-        "X264",
+-        "X265",
+-        "JPEG_DECODER",
+-        "JPEG_ENCODER",
+-        "KVAZAAR",
+-        "OPENJPH_ENCODER",
+-        "OpenJPEG_DECODER",
+-        "OpenJPEG_ENCODER",
+-        "OPEN_JPH_ENCODER",
+-        "FFMPEG_DECODER",
+-        "OpenH264_DECODER",
+-        "UVG266",
+-        "VVDEC",
+-        "VVENC",
+-    ];
++    if let Some(output) = &x265_output {
++        libheif
++            .define("X265_INCLUDE_DIR", output.join("include"))
++            .define("X265_LIBRARY", "-x265")
++            .define("WITH_X265", "ON")
++            .define("WITH_KVAZAAR", "OFF");
++    }
+ 
+-    let disabled_enc_dec = [
+-        // A lot of errors like "undefined reference to `av_packet_free'" during linking
+-        "FFMPEG_DECODER",
+-    ];
++    if let Some(output) = &kvazaar_output {
++        libheif
++            .define("KVAZAAR_INCLUDE_DIR", output.join("include"))
++            .define("KVAZAAR_LIBRARY", "-kvazaar")
++            .define("WITH_X265", "OFF")
++            .define("WITH_KVAZAAR", "ON")
++            .define("WITH_KVAZAAR_PLUGIN", "ON");
++    }
+ 
+-    // Enable or disable encoders and decoders
+-    for key in encoders_decoders {
+-        let v = if disabled_enc_dec.contains(&key) {
+-            "OFF"
+-        } else {
+-            "ON"
+-        };
+-        build_config.define(format!("WITH_{}", key), v);
+-
+-        // Disable external plugin
+-        build_config.define(format!("WITH_{}_PLUGIN", key), "OFF");
++    if let Some(output) = &libwebp_output {
++        libheif
++            .define("LIBSHARPYUV_INCLUDE_DIR", output.join("include/webp"))
++            .define("LIBSHARPYUV_LIBRARY", output.join("lib/libsharpyuv.a"));
+     }
+ 
+-    let libheif_build = build_config.build();
++    if is_emscripten {
++        libheif.define("ENABLE_MULTITHREADING_SUPPORT", "OFF");
++    }
+ 
+-    libheif_build
+-        .join("lib/pkgconfig")
++    let libheif_output = libheif.build();
++    let _include_dirs = vec![libheif_output
++        .join("include")
+         .to_string_lossy()
+-        .to_string()
+-}
++        .into_owned()];
++
++    if is_msvc {
++        println!(
++            "cargo:rustc-link-search=native={}",
++            libde265_output.join("lib").display()
++        );
++        println!("cargo:rustc-link-lib=static=libde265");
++
++        if let Some(output) = x265_output {
++            println!(
++                "cargo:rustc-link-search=native={}",
++                output.join("lib").display()
++            );
++            println!("cargo:rustc-link-lib=static=x265-static");
++        }
+ 
+-fn find_libheif() -> Vec<String> {
+-    #[allow(unused_mut)]
+-    let mut config = system_deps::Config::new();
+-
+-    #[cfg(feature = "embedded-libheif")]
+-    {
+-        std::env::set_var("SYSTEM_DEPS_LIBHEIF_BUILD_INTERNAL", "always");
+-        config = config.add_build_internal("libheif", |lib, version| {
+-            let pc_file_path = compile_libheif();
+-            system_deps::Library::from_internal_pkg_config(pc_file_path, lib, version)
+-        });
+-    }
++        if let Some(output) = kvazaar_output {
++            println!(
++                "cargo:rustc-link-search=native={}",
++                output.join("lib").display()
++            );
++            println!("cargo:rustc-link-lib=static=libkvazaar");
++        }
++
++        if let Some(output) = libwebp_output {
++            println!(
++                "cargo:rustc-link-search=native={}",
++                output.join("lib").display()
++            );
++            println!("cargo:rustc-link-lib=static=libsharpyuv");
++        }
+ 
+-    use system_deps::Error;
+-
+-    match config.probe() {
+-        Ok(deps) => deps
+-            .all_include_paths()
+-            .iter()
+-            .filter_map(|p| p.to_str())
+-            .map(|p| p.to_string())
+-            .collect(),
+-        Err(err) => {
+-            let err_msg = match &err {
+-                Error::InvalidMetadata(msg) => {
+-                    if msg.contains("No version") && msg.contains("libheif") {
+-                        "You MUST enable one of the crate features to specify \
+-                    minimal supported version of 'libheif' API (e.g. v1_17)."
+-                            .to_string()
+-                    } else {
+-                        err.to_string()
+-                    }
+-                }
+-                _ => err.to_string(),
+-            };
+-            println!("cargo:error={err_msg}");
+-            std::process::exit(1);
++        println!(
++            "cargo:rustc-link-search=native={}",
++            libheif_output.join("lib").display()
++        );
++        println!("cargo:rustc-link-lib=static=heif");
++    } else {
++        emit_static_link_search(&libde265_output, "de265");
++        if let Some(output) = &x265_output {
++            emit_static_link_search(output, "x265");
++        }
++        if let Some(output) = &kvazaar_output {
++            emit_static_link_search(output, "kvazaar");
++        }
++        if let Some(output) = &libwebp_output {
++            emit_static_link_search(output, "sharpyuv");
++        }
++        emit_static_link_search(&libheif_output, "heif");
++
++        if target_os == "macos" || target_os == "freebsd" {
++            println!("cargo:rustc-link-lib=c++");
++        } else if target_os == "linux" {
++            println!("cargo:rustc-link-lib=stdc++");
+         }
+     }
++
++    #[cfg(feature = "use-bindgen")]
++    run_bindgen(&_include_dirs, is_emscripten);
+ }
+ 
+-#[cfg(all(target_os = "windows", target_env = "msvc"))]
+-fn install_libheif_by_vcpkg() {
+-    let vcpkg_lib = vcpkg::Config::new()
+-        .emit_includes(true)
+-        .find_package("libheif");
+-    if let Err(err) = vcpkg_lib {
+-        println!("cargo:warning={}", err);
+-        std::process::exit(1);
++fn configure_msvc_runtime(config: &mut cmake::Config) {
++    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
++        config.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");
+     }
+-    // Static libraries on Windows do not automatically pull in all of their own
+-    // system-library dependencies. Since x265 uses registry functions from Advapi32,
+-    // your Rust crate must explicitly tell Cargo to link that Windows system library.
+-    println!("cargo:rustc-link-lib=advapi32");
++}
++
++fn join_paths_for_cmake(paths: &[PathBuf]) -> String {
++    paths
++        .iter()
++        .map(|path| path.to_string_lossy().into_owned())
++        .collect::<Vec<_>>()
++        .join(";")
++}
++
++fn emit_static_link_search(prefix: &PathBuf, lib_name: &str) {
++    println!(
++        "cargo:rustc-link-search=native={}",
++        prefix.join("lib").display()
++    );
++    println!("cargo:rustc-link-lib=static={lib_name}");
+ }
+ 
+ #[cfg(feature = "use-bindgen")]
+-fn run_bindgen(include_paths: &[String]) {
++fn run_bindgen(include_paths: &[String], is_emscripten: bool) {
+     let mut base_builder = bindgen::Builder::default()
+         .header("wrapper.h")
+         .generate_comments(true)
+@@ -207,8 +261,17 @@ fn run_bindgen(include_paths: &[String]) {
+         .clang_args([
+             "-fparse-all-comments",
+             "-fretain-comments-from-system-headers",
++            "-fvisibility=default",
+         ]);
+ 
++    if is_emscripten {
++        let emsdk_path = std::env::var("EMSDK").expect("env $EMSDK should be set");
++        base_builder = base_builder.clang_arg(format!(
++            "-I{}/upstream/emscripten/cache/sysroot/include",
++            emsdk_path
++        ));
++    }
++
+     for path in include_paths {
+         base_builder = base_builder.clang_arg(format!("-I{path}"));
+     }
+@@ -305,17 +368,3 @@ fn run_bindgen(include_paths: &[String]) {
+         .write_to_file(out_path.join("bindings_wo_tests.rs"))
+         .expect("Couldn't write bindings_wo_tests.rs!");
+ }
+-
+-fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> {
+-    std::fs::create_dir_all(&dst)?;
+-    for entry in std::fs::read_dir(src)? {
+-        let entry = entry?;
+-        let ty = entry.file_type()?;
+-        if ty.is_dir() {
+-            copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+-        } else {
+-            std::fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+-        }
+-    }
+-    Ok(())
+-}

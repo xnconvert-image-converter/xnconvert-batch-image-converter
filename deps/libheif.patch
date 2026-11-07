@@ -1,0 +1,30 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 17d8ae6a..58664c36 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -604,7 +604,9 @@ else ()
+     set(CMAKE_CXX_VISIBILITY_PRESET default)
+ endif ()
+ 
+-add_subdirectory(heifio)
++if(WITH_EXAMPLES)
++    add_subdirectory(heifio)
++endif()
+ 
+ if(WITH_EXAMPLES)
+     add_subdirectory (examples)
+diff --git a/libheif/CMakeLists.txt b/libheif/CMakeLists.txt
+index bddfc6e6..8f7ce4f5 100644
+--- a/libheif/CMakeLists.txt
++++ b/libheif/CMakeLists.txt
+@@ -253,7 +253,9 @@ endif()
+ target_compile_definitions(heif
+         PUBLIC
+         LIBHEIF_EXPORTS
+-        HAVE_VISIBILITY)
++        HAVE_VISIBILITY
++        LIBDE265_STATIC_BUILD
++        KVZ_STATIC_LIB)
+ 
+ if (PLUGIN_LOADING_SUPPORTED_AND_ENABLED)
+     target_compile_definitions(heif PRIVATE ENABLE_PLUGIN_LOADING=1)
